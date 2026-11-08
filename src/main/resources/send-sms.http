@@ -1,0 +1,22 @@
+### Real Eskiz SMS - expect 200, success=true, mock=false
+POST http://localhost:8082/api/v1/sms/send
+Content-Type: application/json
+
+{
+  "phone": "+998505874363",
+  "message": "This is test from Eskiz"
+}
+
+### Eskiz login - run locally; do not share the returned token
+POST https://notify.eskiz.uz/api/auth/login
+Content-Type: multipart/form-data; boundary=EskizBoundary
+
+--EskizBoundary
+Content-Disposition: form-data; name="email"
+
+alexklight8@gmail.com
+--EskizBoundary
+Content-Disposition: form-data; name="password"
+
+xdNNioUwQuFx3De8Y29h2DOjadSFkP2TsFpzUI7x
+--EskizBoundary--
