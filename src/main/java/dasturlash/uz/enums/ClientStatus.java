@@ -1,4 +1,5 @@
 package dasturlash.uz.enums;
 
-public class ClientStatus {
+public enum ClientStatus {
+    ACTIVE, BLOCKED
 }

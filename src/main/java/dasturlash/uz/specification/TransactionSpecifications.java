@@ -6,13 +6,40 @@ import org.springframework.data.jpa.domain.Specification;
 
 import java.time.LocalDate;
 
-public class TransactionSpecification {
+public class TransactionSpecifications {
 
-    Specification<Transaction> belongsToClient(String clientId);
+    public static Specification<Transaction> belongsToClient(String clientId) {
+        return (root, query, cb) -> cb.equal(root.get("client").get("id"), clientId);
+    }
 
-    Specification<Transaction> hasType(TransactionType type);
+    public static Specification<Transaction> hasType(TransactionType type) {
+        return (root, query, cb) -> {
+            if (type == null) {
+                return cb.conjunction();
+            } else {
+                return cb.equal(root.get("type"), type);
+            }
+        };
 
-    Specification<Transaction> createdFrom(LocalDate fromDate);
+    }
 
-    Specification<Transaction> createdTo(LocalDate toDate);
+    public static Specification<Transaction> createdFrom(LocalDate fromDate) {
+        return (root, query, cb) -> {
+            if (fromDate == null) {
+                return cb.conjunction();
+            } else {
+                return cb.greaterThanOrEqualTo(root.get("createdDate"), fromDate.atStartOfDay());
+            }
+        };
+    }
+
+    public static Specification<Transaction> createdTo(LocalDate toDate) {
+        return (root, query, cb) -> {
+            if (toDate == null) {
+                return cb.conjunction();
+            } else {
+                return cb.lessThan(root.get("createdDate"), toDate.plusDays(1).atStartOfDay());
+            }
+        };
+    }
 }

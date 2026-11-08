@@ -1,4 +1,5 @@
 package dasturlash.uz.enums;
 
-public class SmsStatus {
+public enum SmsStatus {
+    PENDING, SENT, FAILED
 }

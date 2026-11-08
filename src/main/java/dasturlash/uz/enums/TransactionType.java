@@ -1,4 +1,5 @@
 package dasturlash.uz.enums;
 
-public class TransactionType {
+public enum TransactionType {
+    DEBIT, CREDIT
 }
