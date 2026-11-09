@@ -36,35 +36,31 @@ public class SmsService {
     private final SmsRepository smsRepository;
     private final TransactionRepository transactionRepository;
 
-    // Balance change, SMS and DEBIT record commit together.
-    // If an operation fails with a runtime exception, all changes roll back.
+    // Commit the balance change, SMS, and DEBIT together; roll back on runtime failure.
     @Transactional
     public SmsSendResponseDTO send(SmsSendRequestDTO request) {
 
-        // Lock this client's row until the transaction finishes.
-        // Concurrent balance changes for the same client must wait.
+        // Serialize balance changes that use this client's row lock.
         Client client = clientRepository.findForUpdateByIdAndVisibleTrue(request.getClientId()).orElseThrow(() -> new ResourceNotFoundException("Client not found"));
 
-        // BLOCKED clients may log in, but cannot send SMS.
         if (client.getStatus() != ClientStatus.ACTIVE) {
             throw new BadRequestException("Client is not active");
         }
 
         BigDecimal smsPrice = new BigDecimal("125.00");
 
-        // Reject before changing any data if the balance is insufficient.
+        // Check funds before changing the balance or saving records.
         if (smsPrice.compareTo(client.getBalance()) > 0) {
             throw new BadRequestException("Insufficient balance.");
         }
 
-        // Keep both balances for the transaction history.
         BigDecimal balanceBefore = client.getBalance();
         BigDecimal balanceAfter = balanceBefore.subtract(smsPrice);
 
-        //Set client new balance
+        // JPA persists this managed entity's balance change when the transaction commits.
         client.setBalance(balanceAfter);
 
-        // Store the SMS and its fixed price.
+        // SENT represents simulated sending; no external delivery occurs here.
         Sms sms = new Sms();
         sms.setClient(client);
         sms.setPhone(request.getPhone());
@@ -74,7 +70,7 @@ public class SmsService {
         sms.setCreatedDate(LocalDateTime.now());
         smsRepository.save(sms);
 
-        // Record why money was deducted and the balance before/after.
+        // Link the deduction to its SMS and retain both balances for reporting.
         Transaction transaction = new Transaction();
         transaction.setClient(client);
         transaction.setType(TransactionType.DEBIT);
@@ -86,21 +82,18 @@ public class SmsService {
         transactionRepository.save(transaction);
 
         SmsSendResponseDTO response = new SmsSendResponseDTO();
-
-        // SMS ID and client ID identify different records.
         response.setId(sms.getId());
         response.setClientId(client.getId());
-
         response.setPhone(sms.getPhone());
         response.setText(sms.getText());
         response.setPrice(sms.getPrice());
         response.setStatus(sms.getStatus());
         response.setBalanceAfter(balanceAfter);
         response.setCreatedDate(sms.getCreatedDate());
-
         return response;
     }
 
+    // Expose the client ID without serializing the Client entity.
     private SmsResponseDTO toDTO(Sms sms) {
         SmsResponseDTO response = new SmsResponseDTO();
         response.setId(sms.getId());
@@ -113,46 +106,51 @@ public class SmsService {
         return response;
     }
 
-    // Get this client's SMS history with optional date filters and pagination.
     @Transactional(readOnly = true)
     public Page<SmsResponseDTO> getMySms(String clientId, int page, int size, SmsHistoryFilterDTO filter) {
+
+        // Reject reversed date ranges before querying.
         if (filter.getFromDate() != null && filter.getToDate() != null && filter.getFromDate().isAfter(filter.getToDate())) {
             throw new BadRequestException("From date must not be after to date.");
         }
-        Specification<Sms> specification = SmsSpecifications.belongsToClient(clientId)
-                .and(SmsSpecifications.createdFrom(filter.getFromDate()))
-                .and(SmsSpecifications.createdTo(filter.getToDate()));
+
+        // Always restrict client history to the supplied client ID.
+        Specification<Sms> specification = SmsSpecifications.belongsToClient(clientId).and(SmsSpecifications.createdFrom(filter.getFromDate())).and(SmsSpecifications.createdTo(filter.getToDate()));
 
         clientRepository.findByIdAndVisibleTrue(clientId).orElseThrow(() -> new ResourceNotFoundException("Client not found"));
+
+        // Service pages start at zero; ID breaks ties between equal creation times.
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdDate", "id"));
+
         Page<Sms> result = smsRepository.findAll(specification, pageable);
         return result.map(this::toDTO);
     }
 
-    // Get one SMS by ID for admin reporting.
+    // Look up an SMS across all clients for admin reporting.
     @Transactional(readOnly = true)
     public SmsResponseDTO getById(String id) {
         Sms sms = smsRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("SMS not found: " + id));
+
         return toDTO(sms);
     }
 
-    //Get ALL SMS for admin
     @Transactional(readOnly = true)
     public Page<SmsResponseDTO> getAll(int page, int size, AdminSmsFilterDTO filter) {
+
         if (filter.getFromDate() != null && filter.getToDate() != null && filter.getFromDate().isAfter(filter.getToDate())) {
             throw new BadRequestException("From date must not be after to date.");
         }
 
-        Specification<Sms> specification =
-                SmsSpecifications.createdFrom(filter.getFromDate())
-                        .and(SmsSpecifications.createdTo(filter.getToDate()))
-                        .and(SmsSpecifications.hasPhone(filter.getPhone()))
-                        .and(SmsSpecifications.hasStatus(filter.getStatus()));
+        // Omitted filters impose no restriction.
+        Specification<Sms> specification = SmsSpecifications.createdFrom(filter.getFromDate()).and(SmsSpecifications.createdTo(filter.getToDate())).and(SmsSpecifications.hasPhone(filter.getPhone())).and(SmsSpecifications.hasStatus(filter.getStatus()));
 
+        // Admin queries include all clients unless one is specified.
         if (filter.getClientId() != null && !filter.getClientId().isBlank()) {
             specification = specification.and(SmsSpecifications.belongsToClient(filter.getClientId()));
         }
+
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdDate", "id"));
+
         Page<Sms> result = smsRepository.findAll(specification, pageable);
         return result.map(this::toDTO);
     }

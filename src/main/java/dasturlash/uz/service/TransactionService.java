@@ -18,31 +18,38 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class TransactionService {
+
     private final TransactionRepository transactionRepository;
 
+    // Report missing transactions instead of returning an empty response.
     @Transactional(readOnly = true)
     public TransactionResponseDTO getById(String id) {
         Transaction transaction = transactionRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Transaction not found: " + id));
+
         return toDTO(transaction);
     }
 
     @Transactional(readOnly = true)
     public Page<TransactionResponseDTO> getAll(int page, int size, AdminTransactionFilterDTO filter) {
+
+        // Reject reversed dates before building the query.
         if (filter.getFromDate() != null && filter.getToDate() != null && filter.getFromDate().isAfter(filter.getToDate())) {
             throw new BadRequestException("From date must not be after to date.");
         }
-        Specification<Transaction> specification = TransactionSpecifications.createdFrom(filter.getFromDate())
-                .and(TransactionSpecifications.createdTo(filter.getToDate()))
-                .and(TransactionSpecifications.hasType(filter.getType()));
 
-        if (filter.getClientId() != null &&  !filter.getClientId().isBlank()) {
+        // Combine optional date and transaction-type restrictions.
+        Specification<Transaction> specification = TransactionSpecifications.createdFrom(filter.getFromDate()).and(TransactionSpecifications.createdTo(filter.getToDate())).and(TransactionSpecifications.hasType(filter.getType()));
+
+        // Without a client filter, include transactions from all clients.
+        if (filter.getClientId() != null && !filter.getClientId().isBlank()) {
             specification = specification.and(TransactionSpecifications.belongsToClient(filter.getClientId()));
         }
 
+        // Service pages start at zero; ID breaks ties between equal creation times.
         PageRequest pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdDate", "id"));
+
         Page<Transaction> result = transactionRepository.findAll(specification, pageable);
         return result.map(this::toDTO);
-
     }
 
     private TransactionResponseDTO toDTO(Transaction transaction) {

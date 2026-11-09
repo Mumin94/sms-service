@@ -22,33 +22,52 @@ import java.time.LocalDateTime;
 @Service
 @RequiredArgsConstructor
 public class ClientService {
+
     private final ClientRepository clientRepository;
     private final PasswordEncoder passwordEncoder;
     private final TransactionRepository transactionRepository;
 
+    // Use the same error for an unknown login and an incorrect password.
     public ClientResponseDTO login(ClientLoginRequestDTO request) {
-        Client client = clientRepository.findByLoginAndVisibleTrue(request.getLogin()).orElseThrow(() -> new BadRequestException("Login or password is incorrect."));
+        Client client = clientRepository.findByLoginAndVisibleTrue(request.getLogin())
+                .orElseThrow(() ->
+                        new BadRequestException("Login or password is incorrect."));
+
+        // Compare the raw password with the stored encoded password.
         if (!passwordEncoder.matches(request.getPassword(), client.getPassword())) {
             throw new BadRequestException("Login or password is incorrect.");
         }
+
         return toDTO(client);
     }
 
+    // Read the balance without modifying the client.
     public BalanceResponseDTO getBalance(String clientId) {
-        Client client = clientRepository.findByIdAndVisibleTrue(clientId).orElseThrow(() -> new ResourceNotFoundException("Client not found."));
+        Client client = clientRepository.findByIdAndVisibleTrue(clientId)
+                .orElseThrow(() -> new ResourceNotFoundException("Client not found."));
+
         BalanceResponseDTO balanceResponseDTO = new BalanceResponseDTO();
         balanceResponseDTO.setBalance(client.getBalance());
         balanceResponseDTO.setClientId(client.getId());
         return balanceResponseDTO;
     }
 
+    // Commit the balance increase and its CREDIT record together.
     @Transactional
-    public BalanceResponseDTO fillBalance(String clientId, FillBalanceRequestDTO request) {
-        Client client = clientRepository.findForUpdateByIdAndVisibleTrue(clientId).orElseThrow(() -> new ResourceNotFoundException("Client not found."));
+    public BalanceResponseDTO fillBalance(
+            String clientId, FillBalanceRequestDTO request) {
+
+        // Use the same row lock as SMS deductions to serialize balance changes.
+        Client client = clientRepository.findForUpdateByIdAndVisibleTrue(clientId)
+                .orElseThrow(() -> new ResourceNotFoundException("Client not found."));
+
         BigDecimal balanceBefore = client.getBalance();
         BigDecimal balanceAfter = balanceBefore.add(request.getAmount());
+
+        // JPA saves this managed entity's change when the transaction commits.
         client.setBalance(balanceAfter);
 
+        // Preserve the reason, amount, and balances for transaction reporting.
         Transaction transaction = new Transaction();
         transaction.setClient(client);
         transaction.setType(TransactionType.CREDIT);
@@ -62,9 +81,7 @@ public class ClientService {
         BalanceResponseDTO balanceDTO = new BalanceResponseDTO();
         balanceDTO.setBalance(client.getBalance());
         balanceDTO.setClientId(client.getId());
-
         return balanceDTO;
-
     }
 
     private ClientResponseDTO toDTO(Client client) {
@@ -81,6 +98,5 @@ public class ClientService {
         clientResponseDTO.setVisible(client.getVisible());
         clientResponseDTO.setCreatedDate(client.getCreatedDate());
         return clientResponseDTO;
-
     }
 }
