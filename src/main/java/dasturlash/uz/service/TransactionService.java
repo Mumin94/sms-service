@@ -2,7 +2,10 @@ package dasturlash.uz.service;
 
 import dasturlash.uz.dto.request.AdminTransactionFilterDTO;
 import dasturlash.uz.dto.response.TransactionResponseDTO;
+import dasturlash.uz.entity.Client;
+import dasturlash.uz.entity.Sms;
 import dasturlash.uz.entity.Transaction;
+import dasturlash.uz.enums.TransactionType;
 import dasturlash.uz.exception.BadRequestException;
 import dasturlash.uz.exception.ResourceNotFoundException;
 import dasturlash.uz.repository.TransactionRepository;
@@ -14,6 +17,9 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 @Service
 @RequiredArgsConstructor
@@ -38,7 +44,9 @@ public class TransactionService {
         }
 
         // Combine optional date and transaction-type restrictions.
-        Specification<Transaction> specification = TransactionSpecifications.createdFrom(filter.getFromDate()).and(TransactionSpecifications.createdTo(filter.getToDate())).and(TransactionSpecifications.hasType(filter.getType()));
+        Specification<Transaction> specification = TransactionSpecifications.createdFrom(filter.getFromDate())
+                .and(TransactionSpecifications.createdTo(filter.getToDate()))
+                .and(TransactionSpecifications.hasType(filter.getType()));
 
         // Without a client filter, include transactions from all clients.
         if (filter.getClientId() != null && !filter.getClientId().isBlank()) {
@@ -52,6 +60,33 @@ public class TransactionService {
         return result.map(this::toDTO);
     }
 
+    // Called within the balance operation's transaction.
+    public Transaction createCredit(Client client, BigDecimal amount, BigDecimal balanceBefore, BigDecimal balanceAfter){
+        Transaction transaction = new Transaction();
+        transaction.setClient(client);
+        transaction.setType(TransactionType.CREDIT);
+        transaction.setAmount(amount);
+        transaction.setBalanceBefore(balanceBefore);
+        transaction.setBalanceAfter(balanceAfter);
+        transaction.setCreatedDate(LocalDateTime.now());
+        transaction.setDescription("Balance top-up");
+        return transactionRepository.save(transaction);
+    }
+
+    // Called within the balance operation's transaction.
+    public Transaction createDebit(Client client, Sms sms, BigDecimal balanceBefore, BigDecimal balanceAfter) {
+        Transaction transaction = new Transaction();
+        transaction.setClient(client);
+        transaction.setType(TransactionType.DEBIT);
+        transaction.setAmount(sms.getPrice());
+        transaction.setDescription("SMS sending: " + sms.getId());
+        transaction.setBalanceBefore(balanceBefore);
+        transaction.setBalanceAfter(balanceAfter);
+        transaction.setCreatedDate(LocalDateTime.now());
+        return transactionRepository.save(transaction);
+    }
+
+    // Return client ID without exposing the Client entity.
     private TransactionResponseDTO toDTO(Transaction transaction) {
         TransactionResponseDTO response = new TransactionResponseDTO();
         response.setId(transaction.getId());

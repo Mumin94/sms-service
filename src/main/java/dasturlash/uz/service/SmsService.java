@@ -7,15 +7,14 @@ import dasturlash.uz.dto.response.SmsResponseDTO;
 import dasturlash.uz.dto.response.SmsSendResponseDTO;
 import dasturlash.uz.entity.Client;
 import dasturlash.uz.entity.Sms;
-import dasturlash.uz.entity.Transaction;
+import dasturlash.uz.entity.SmsPricing;
 import dasturlash.uz.enums.ClientStatus;
 import dasturlash.uz.enums.SmsStatus;
-import dasturlash.uz.enums.TransactionType;
 import dasturlash.uz.exception.BadRequestException;
 import dasturlash.uz.exception.ResourceNotFoundException;
 import dasturlash.uz.repository.ClientRepository;
+import dasturlash.uz.repository.SmsPricingRepository;
 import dasturlash.uz.repository.SmsRepository;
-import dasturlash.uz.repository.TransactionRepository;
 import dasturlash.uz.specification.SmsSpecifications;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -34,7 +33,9 @@ public class SmsService {
 
     private final ClientRepository clientRepository;
     private final SmsRepository smsRepository;
-    private final TransactionRepository transactionRepository;
+    private final SmsPricingRepository smsPricingRepository;
+    private final TransactionService transactionService;
+
 
     // Commit the balance change, SMS, and DEBIT together; roll back on runtime failure.
     @Transactional
@@ -47,7 +48,7 @@ public class SmsService {
             throw new BadRequestException("Client is not active");
         }
 
-        BigDecimal smsPrice = new BigDecimal("125.00");
+        BigDecimal smsPrice = getSmsPrice();
 
         // Check funds before changing the balance or saving records.
         if (smsPrice.compareTo(client.getBalance()) > 0) {
@@ -61,49 +62,11 @@ public class SmsService {
         client.setBalance(balanceAfter);
 
         // SENT represents simulated sending; no external delivery occurs here.
-        Sms sms = new Sms();
-        sms.setClient(client);
-        sms.setPhone(request.getPhone());
-        sms.setText(request.getText());
-        sms.setPrice(smsPrice);
-        sms.setStatus(SmsStatus.SENT);
-        sms.setCreatedDate(LocalDateTime.now());
-        smsRepository.save(sms);
+        Sms sms = createSms(client, request, smsPrice);
 
         // Link the deduction to its SMS and retain both balances for reporting.
-        Transaction transaction = new Transaction();
-        transaction.setClient(client);
-        transaction.setType(TransactionType.DEBIT);
-        transaction.setAmount(smsPrice);
-        transaction.setDescription("SMS sending: " + sms.getId());
-        transaction.setBalanceBefore(balanceBefore);
-        transaction.setBalanceAfter(balanceAfter);
-        transaction.setCreatedDate(LocalDateTime.now());
-        transactionRepository.save(transaction);
-
-        SmsSendResponseDTO response = new SmsSendResponseDTO();
-        response.setId(sms.getId());
-        response.setClientId(client.getId());
-        response.setPhone(sms.getPhone());
-        response.setText(sms.getText());
-        response.setPrice(sms.getPrice());
-        response.setStatus(sms.getStatus());
-        response.setBalanceAfter(balanceAfter);
-        response.setCreatedDate(sms.getCreatedDate());
-        return response;
-    }
-
-    // Expose the client ID without serializing the Client entity.
-    private SmsResponseDTO toDTO(Sms sms) {
-        SmsResponseDTO response = new SmsResponseDTO();
-        response.setId(sms.getId());
-        response.setClientId(sms.getClient().getId());
-        response.setPhone(sms.getPhone());
-        response.setText(sms.getText());
-        response.setPrice(sms.getPrice());
-        response.setStatus(sms.getStatus());
-        response.setCreatedDate(sms.getCreatedDate());
-        return response;
+        transactionService.createDebit(client, sms, balanceBefore, balanceAfter);
+        return toSendDTO(sms, balanceAfter);
     }
 
     @Transactional(readOnly = true)
@@ -142,7 +105,10 @@ public class SmsService {
         }
 
         // Omitted filters impose no restriction.
-        Specification<Sms> specification = SmsSpecifications.createdFrom(filter.getFromDate()).and(SmsSpecifications.createdTo(filter.getToDate())).and(SmsSpecifications.hasPhone(filter.getPhone())).and(SmsSpecifications.hasStatus(filter.getStatus()));
+        Specification<Sms> specification = SmsSpecifications.createdFrom(filter.getFromDate())
+                .and(SmsSpecifications.createdTo(filter.getToDate()))
+                .and(SmsSpecifications.hasPhone(filter.getPhone()))
+                .and(SmsSpecifications.hasStatus(filter.getStatus()));
 
         // Admin queries include all clients unless one is specified.
         if (filter.getClientId() != null && !filter.getClientId().isBlank()) {
@@ -153,5 +119,56 @@ public class SmsService {
 
         Page<Sms> result = smsRepository.findAll(specification, pageable);
         return result.map(this::toDTO);
+    }
+
+    // Store the charged price so later pricing changes do not affect this SMS.
+    private Sms createSms(Client client, SmsSendRequestDTO request, BigDecimal price) {
+        Sms sms = new Sms();
+        sms.setClient(client);
+        sms.setPhone(request.getPhone());
+        sms.setText(request.getText());
+        sms.setPrice(price);
+        sms.setStatus(SmsStatus.SENT);
+        sms.setCreatedDate(LocalDateTime.now());
+        return smsRepository.save(sms);
+    }
+
+    // Expose the client ID without serializing the Client entity.
+    private SmsResponseDTO toDTO(Sms sms) {
+        SmsResponseDTO response = new SmsResponseDTO();
+        response.setId(sms.getId());
+        response.setClientId(sms.getClient().getId());
+        response.setPhone(sms.getPhone());
+        response.setText(sms.getText());
+        response.setPrice(sms.getPrice());
+        response.setStatus(sms.getStatus());
+        response.setCreatedDate(sms.getCreatedDate());
+        return response;
+    }
+
+    // Include the remaining balance in the send response.
+    private SmsSendResponseDTO toSendDTO(Sms sms, BigDecimal balanceAfter) {
+        SmsSendResponseDTO response = new SmsSendResponseDTO();
+        response.setId(sms.getId());
+        response.setClientId(sms.getClient().getId());
+        response.setPhone(sms.getPhone());
+        response.setText(sms.getText());
+        response.setPrice(sms.getPrice());
+        response.setStatus(sms.getStatus());
+        response.setBalanceAfter(balanceAfter);
+        response.setCreatedDate(sms.getCreatedDate());
+        return response;
+    }
+
+    // Read and validate the current price from the database.
+    private BigDecimal getSmsPrice() {
+        SmsPricing pricing = smsPricingRepository.findById(1).orElseThrow(() -> new IllegalStateException("SMS price is not configured."));
+
+        BigDecimal price = pricing.getPrice();
+        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalStateException("SMS price must be greater than zero.");
+        }
+
+        return price;
     }
 }
